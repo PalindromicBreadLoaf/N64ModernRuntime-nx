@@ -30,6 +30,8 @@
 #    include <Windows.h>
 #elif defined(__SWITCH__)
 #    include <switch.h>
+extern "C" __attribute__((weak)) uint8_t* lod_switch_rdram_alloc(size_t allocation_size, size_t mem_size);
+extern "C" __attribute__((weak)) void lod_switch_rdram_free(uint8_t* rdram);
 #else
 #    include <sys/mman.h>
 #endif
@@ -779,9 +781,7 @@ void recomp::start(const recomp::Configuration& cfg) {
     // that initializes to zero. Protect the region above the memory size to catch accesses to invalid addresses.
     uint8_t* rdram;
     bool alloc_failed;
-#ifdef __SWITCH__
-    VirtmemReservation* rdram_reservation = nullptr;
-#endif
+
 #ifdef _WIN32
     rdram = reinterpret_cast<uint8_t*>(VirtualAlloc(nullptr, allocation_size, MEM_COMMIT | MEM_RESERVE, PAGE_NOACCESS));
     DWORD old_protect = 0;
@@ -794,27 +794,12 @@ void recomp::start(const recomp::Configuration& cfg) {
         }
     }
 #elif defined(__SWITCH__)
-    rdram = nullptr;
-    void* rdram_slice = nullptr;
-    virtmemLock();
-    rdram_slice = virtmemFindAslr(allocation_size, 0);
-    if (rdram_slice != nullptr) {
-        rdram_reservation = virtmemAddReservation(rdram_slice, allocation_size);
-    }
-    virtmemUnlock();
-
-    alloc_failed = (rdram_reservation == nullptr);
-    if (!alloc_failed) {
-        alloc_failed = R_FAILED(svcMapPhysicalMemory(rdram_slice, mem_size));
-        if (alloc_failed) {
-            virtmemLock();
-            virtmemRemoveReservation(rdram_reservation);
-            virtmemUnlock();
-            rdram_reservation = nullptr;
-        }
-        else {
-            rdram = static_cast<uint8_t*>(rdram_slice);
-        }
+    rdram = lod_switch_rdram_alloc != nullptr ? lod_switch_rdram_alloc(allocation_size, mem_size)
+                                              : nullptr;
+    alloc_failed = (rdram == nullptr);
+    if (alloc_failed && lod_switch_rdram_alloc == nullptr) {
+        fprintf(stderr, "[rdram] no lod_switch_rdram_alloc to map %llu MB with\n",
+                (unsigned long long)(mem_size / (1024 * 1024)));
     }
 #else
     rdram = (uint8_t*)mmap(NULL, allocation_size, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
@@ -870,11 +855,8 @@ void recomp::start(const recomp::Configuration& cfg) {
     // VirtualFree returns zero on failure.
     free_failed = (VirtualFree(rdram, 0, MEM_RELEASE) == 0);
 #elif defined(__SWITCH__)
-    free_failed = R_FAILED(svcUnmapPhysicalMemory(rdram, mem_size));
-    virtmemLock();
-    virtmemRemoveReservation(rdram_reservation);
-    virtmemUnlock();
-    rdram_reservation = nullptr;
+    lod_switch_rdram_free(rdram);
+    free_failed = false;
 #else
     // munmap returns -1 on failure.
     free_failed = (munmap(rdram, allocation_size) == -1);

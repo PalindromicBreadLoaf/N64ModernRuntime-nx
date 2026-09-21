@@ -18,6 +18,10 @@ namespace ultramodern {
              * If this function is not provided then the thread id will be used as the name of the thread.
              */
             get_game_thread_name_t *get_game_thread_name;
+
+            using place_native_thread_t = void(const std::string& name);
+
+            place_native_thread_t *place_native_thread = nullptr;
         };
 
         void set_callbacks(const callbacks_t& callbacks);

@@ -148,6 +148,39 @@ void ultramodern::set_native_thread_name(const std::string& name) {
 }
 
 void ultramodern::set_native_thread_priority(ThreadPriority pri) {}
+#elif defined(__SWITCH__)
+#include <switch.h>
+
+void ultramodern::set_native_thread_name(const std::string& name) {
+    if (threads_callbacks.place_native_thread != nullptr) {
+        threads_callbacks.place_native_thread(name);
+    }
+}
+
+void ultramodern::set_native_thread_priority(ThreadPriority pri) {
+    u32 priority = 0x2C;
+    switch (pri) {
+        case ThreadPriority::Low:
+            priority = 0x30;
+            break;
+        case ThreadPriority::Normal:
+            priority = 0x2C;
+            break;
+        case ThreadPriority::High:
+            priority = 0x2A;
+            break;
+        case ThreadPriority::VeryHigh:
+            priority = 0x28;
+            break;
+        case ThreadPriority::Critical:
+            priority = 0x26;
+            break;
+        default:
+            throw std::runtime_error("Invalid thread priority!");
+            break;
+    }
+    svcSetThreadPriority(CUR_THREAD_HANDLE, priority);
+}
 #endif
 
 void wait_for_resumed(RDRAM_ARG UltraThreadContext* thread_context) {

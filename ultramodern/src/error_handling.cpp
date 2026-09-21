@@ -23,6 +23,8 @@ void ultramodern::error_handling::quick_exit(const char* filename, int line, con
 
 #ifdef __APPLE__
     std::_Exit(exit_status);
+#elif defined(__SWITCH__)
+    ::quick_exit(exit_status);
 #else
     std::quick_exit(exit_status);
 #endif

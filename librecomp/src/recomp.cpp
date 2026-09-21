@@ -28,6 +28,8 @@
 #ifdef _WIN32
 #    define WIN32_LEAN_AND_MEAN
 #    include <Windows.h>
+#elif defined(__SWITCH__)
+#    include <switch.h>
 #else
 #    include <sys/mman.h>
 #endif
@@ -214,7 +216,7 @@ bool recomp::load_stored_rom(std::u8string& game_id) {
     if (find_it == game_roms.end()) {
         return false;
     }
-    
+
     std::vector<uint8_t> stored_rom_data = read_file(config_path / find_it->second.stored_filename());
 
     if (!check_hash(stored_rom_data, find_it->second.rom_hash)) {
@@ -251,7 +253,7 @@ bool recomp::Version::from_string(const std::string& str, Version& out) {
     }
 
     // Parse the 3 numbers formed by splitting the string via the periods.
-    std::array<std::from_chars_result, 3> parse_results; 
+    std::array<std::from_chars_result, 3> parse_results;
     std::array<size_t, 3> parse_starts { 0, period_indices[0] + 1, period_indices[1] + 1 };
     std::array<size_t, 3> parse_ends { period_indices[0], period_indices[1], str.size() };
     parse_results[0] = std::from_chars(str.data() + parse_starts[0], str.data() + parse_ends[0], major);
@@ -262,7 +264,7 @@ bool recomp::Version::from_string(const std::string& str, Version& out) {
     auto did_parse = [&](size_t i) {
         return parse_results[i].ec == std::errc{} && parse_results[i].ptr == str.data() + parse_ends[i];
     };
-    
+
     if (!did_parse(0) || !did_parse(1)) {
         return false;
     }
@@ -394,7 +396,7 @@ recomp::RomValidationError recomp::select_rom(const std::filesystem::path& rom_p
     }
 
     write_file(config_path / game_entry.stored_filename(), rom_data);
-    
+
     return recomp::RomValidationError::Good;
 }
 
@@ -436,7 +438,7 @@ extern "C" void cop0_status_write(recomp_context* ctx, gpr value) {
         assert(false);
         exit(EXIT_FAILURE);
     }
-    
+
     // Update the status register in the context
     ctx->status_reg = new_sr;
 }
@@ -471,7 +473,7 @@ std::atomic<GameStatus> game_status = GameStatus::None;
 void run_thread_function(uint8_t* rdram, uint64_t addr, uint64_t sp, uint64_t arg) {
     auto find_it = game_roms.find(current_game.value());
     const recomp::GameEntry& game_entry = find_it->second;
-    
+
     recomp_context ctx{};
     ctx.r29 = sp;
     ctx.r4 = arg;
@@ -685,7 +687,7 @@ bool wait_for_game_started(uint8_t* rdram, recomp_context* context) {
                             if (!cur_error.error_param.empty()) {
                                 mod_error_stream << " (" << cur_error.error_param.c_str() << ")";
                             }
-                            mod_error_stream << "\n";                                
+                            mod_error_stream << "\n";
                         }
                         ultramodern::error_handling::message_box(mod_error_stream.str().c_str());
                         game_status.store(GameStatus::None);
@@ -720,20 +722,20 @@ recomp::SaveType recomp::get_save_type() {
 
 bool recomp::eeprom_allowed() {
     return
-        save_type == SaveType::Eep4k || 
+        save_type == SaveType::Eep4k ||
         save_type == SaveType::Eep16k ||
         save_type == SaveType::AllowAll;
 }
 
 bool recomp::sram_allowed() {
     return
-        save_type == SaveType::Sram || 
+        save_type == SaveType::Sram ||
         save_type == SaveType::AllowAll;
 }
 
 bool recomp::flashram_allowed() {
     return
-        save_type == SaveType::Flashram || 
+        save_type == SaveType::Flashram ||
         save_type == SaveType::AllowAll;
 }
 
@@ -777,6 +779,9 @@ void recomp::start(const recomp::Configuration& cfg) {
     // that initializes to zero. Protect the region above the memory size to catch accesses to invalid addresses.
     uint8_t* rdram;
     bool alloc_failed;
+#ifdef __SWITCH__
+    VirtmemReservation* rdram_reservation = nullptr;
+#endif
 #ifdef _WIN32
     rdram = reinterpret_cast<uint8_t*>(VirtualAlloc(nullptr, allocation_size, MEM_COMMIT | MEM_RESERVE, PAGE_NOACCESS));
     DWORD old_protect = 0;
@@ -786,6 +791,29 @@ void recomp::start(const recomp::Configuration& cfg) {
         alloc_failed = (VirtualProtect(rdram, mem_size, PAGE_READWRITE, &old_protect) == 0);
         if (alloc_failed) {
             VirtualFree(rdram, 0, MEM_RELEASE);
+        }
+    }
+#elif defined(__SWITCH__)
+    rdram = nullptr;
+    void* rdram_slice = nullptr;
+    virtmemLock();
+    rdram_slice = virtmemFindAslr(allocation_size, 0);
+    if (rdram_slice != nullptr) {
+        rdram_reservation = virtmemAddReservation(rdram_slice, allocation_size);
+    }
+    virtmemUnlock();
+
+    alloc_failed = (rdram_reservation == nullptr);
+    if (!alloc_failed) {
+        alloc_failed = R_FAILED(svcMapPhysicalMemory(rdram_slice, mem_size));
+        if (alloc_failed) {
+            virtmemLock();
+            virtmemRemoveReservation(rdram_reservation);
+            virtmemUnlock();
+            rdram_reservation = nullptr;
+        }
+        else {
+            rdram = static_cast<uint8_t*>(rdram_slice);
         }
     }
 #else
@@ -835,12 +863,18 @@ void recomp::start(const recomp::Configuration& cfg) {
     ultramodern::join_event_threads();
     ultramodern::join_thread_cleaner_thread();
     ultramodern::join_saving_thread();
-    
+
     // Free rdram.
     bool free_failed;
 #ifdef _WIN32
     // VirtualFree returns zero on failure.
     free_failed = (VirtualFree(rdram, 0, MEM_RELEASE) == 0);
+#elif defined(__SWITCH__)
+    free_failed = R_FAILED(svcUnmapPhysicalMemory(rdram, mem_size));
+    virtmemLock();
+    virtmemRemoveReservation(rdram_reservation);
+    virtmemUnlock();
+    rdram_reservation = nullptr;
 #else
     // munmap returns -1 on failure.
     free_failed = (munmap(rdram, allocation_size) == -1);

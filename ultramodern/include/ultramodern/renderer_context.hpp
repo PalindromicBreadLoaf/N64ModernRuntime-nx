@@ -62,6 +62,11 @@ namespace ultramodern {
             void* view;
             auto operator<=>(const WindowHandle&) const = default;
         };
+#elif defined(__SWITCH__)
+        struct WindowHandle {
+            void* window;
+            auto operator<=>(const WindowHandle&) const = default;
+        };
 #endif
 
         enum class SetupResult {

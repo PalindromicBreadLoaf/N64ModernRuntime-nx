@@ -36,6 +36,17 @@ bool recomp::finalize_output_file_with_backup(const std::filesystem::path& filep
     temp_path += temp_suffix;
 
     std::error_code ec;
+#if defined(__SWITCH__)
+    std::filesystem::remove(backup_path, ec);
+    if (std::filesystem::exists(filepath, ec)) {
+        std::filesystem::rename(filepath, backup_path, ec);
+        if (ec) {
+            return false;
+        }
+    }
+    std::filesystem::rename(temp_path, filepath, ec);
+    return !ec;
+#else
     if (std::filesystem::exists(filepath, ec)) {
         std::filesystem::copy_file(filepath, backup_path, std::filesystem::copy_options::overwrite_existing, ec);
         if (ec) {
@@ -48,4 +59,5 @@ bool recomp::finalize_output_file_with_backup(const std::filesystem::path& filep
     }
     std::filesystem::remove(temp_path, ec);
     return true;
+#endif
 }
